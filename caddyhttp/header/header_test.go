@@ -1,6 +1,21 @@
+// Copyright 2015 Light Code Labs, LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package header
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,19 +39,23 @@ func TestHeader(t *testing.T) {
 		{"/a", "Foo", "Bar"},
 		{"/a", "Bar", ""},
 		{"/a", "Baz", ""},
+		{"/a", "Server", ""},
 		{"/a", "ServerName", hostname},
 		{"/b", "Foo", ""},
 		{"/b", "Bar", "Removed in /a"},
 	} {
 		he := Headers{
 			Next: httpserver.HandlerFunc(func(w http.ResponseWriter, r *http.Request) (int, error) {
+				w.Header().Set("Bar", "Removed in /a")
+				w.WriteHeader(http.StatusOK)
 				return 0, nil
 			}),
 			Rules: []Rule{
-				{Path: "/a", Headers: []Header{
-					{Name: "Foo", Value: "Bar"},
-					{Name: "ServerName", Value: "{hostname}"},
-					{Name: "-Bar"},
+				{Path: "/a", Headers: http.Header{
+					"Foo":        []string{"Bar"},
+					"ServerName": []string{"{hostname}"},
+					"-Bar":       []string{""},
+					"-Server":    []string{},
 				}},
 			},
 		}
@@ -47,7 +66,8 @@ func TestHeader(t *testing.T) {
 		}
 
 		rec := httptest.NewRecorder()
-		rec.Header().Set("Bar", "Removed in /a")
+		// preset header
+		rec.Header().Set("Server", "Caddy")
 
 		he.ServeHTTP(rec, req)
 
@@ -61,12 +81,12 @@ func TestHeader(t *testing.T) {
 func TestMultipleHeaders(t *testing.T) {
 	he := Headers{
 		Next: httpserver.HandlerFunc(func(w http.ResponseWriter, r *http.Request) (int, error) {
+			fmt.Fprint(w, "This is a test")
 			return 0, nil
 		}),
 		Rules: []Rule{
-			{Path: "/a", Headers: []Header{
-				{Name: "+Link", Value: "</images/image.png>; rel=preload"},
-				{Name: "+Link", Value: "</css/main.css>; rel=preload"},
+			{Path: "/a", Headers: http.Header{
+				"+Link": []string{"</images/image.png>; rel=preload", "</css/main.css>; rel=preload"},
 			}},
 		},
 	}

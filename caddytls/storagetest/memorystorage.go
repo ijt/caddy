@@ -1,9 +1,25 @@
+// Copyright 2015 Light Code Labs, LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package storagetest
 
 import (
-	"github.com/mholt/caddy/caddytls"
+	"errors"
 	"net/url"
 	"sync"
+
+	"github.com/mholt/caddy/caddytls"
 )
 
 // memoryMutex is a mutex used to control access to memoryStoragesByCAURL.
@@ -65,7 +81,7 @@ func (s *InMemoryStorage) Clear() {
 func (s *InMemoryStorage) LoadSite(domain string) (*caddytls.SiteData, error) {
 	siteData, ok := s.Sites[domain]
 	if !ok {
-		return nil, caddytls.ErrStorageNotFound
+		return nil, caddytls.ErrNotExist(errors.New("not found"))
 	}
 	return siteData, nil
 }
@@ -89,21 +105,21 @@ func (s *InMemoryStorage) StoreSite(domain string, data *caddytls.SiteData) erro
 // DeleteSite implements caddytls.Storage.DeleteSite in memory.
 func (s *InMemoryStorage) DeleteSite(domain string) error {
 	if _, ok := s.Sites[domain]; !ok {
-		return caddytls.ErrStorageNotFound
+		return caddytls.ErrNotExist(errors.New("not found"))
 	}
 	delete(s.Sites, domain)
 	return nil
 }
 
-// LockRegister implements Storage.LockRegister by just returning true because
-// it is not a multi-server storage implementation.
-func (s *InMemoryStorage) LockRegister(domain string) (bool, error) {
-	return true, nil
+// TryLock implements Storage.TryLock by returning nil values because it
+// is not a multi-server storage implementation.
+func (s *InMemoryStorage) TryLock(domain string) (caddytls.Waiter, error) {
+	return nil, nil
 }
 
-// UnlockRegister implements Storage.UnlockRegister as a no-op because it is
+// Unlock implements Storage.Unlock as a no-op because it is
 // not a multi-server storage implementation.
-func (s *InMemoryStorage) UnlockRegister(domain string) error {
+func (s *InMemoryStorage) Unlock(domain string) error {
 	return nil
 }
 
@@ -111,7 +127,7 @@ func (s *InMemoryStorage) UnlockRegister(domain string) error {
 func (s *InMemoryStorage) LoadUser(email string) (*caddytls.UserData, error) {
 	userData, ok := s.Users[email]
 	if !ok {
-		return nil, caddytls.ErrStorageNotFound
+		return nil, caddytls.ErrNotExist(errors.New("not found"))
 	}
 	return userData, nil
 }

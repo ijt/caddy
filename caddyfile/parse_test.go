@@ -1,7 +1,23 @@
+// Copyright 2015 Light Code Labs, LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package caddyfile
 
 import (
+	"io/ioutil"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -212,6 +228,17 @@ func TestParseOneAndImport(t *testing.T) {
 		{`""`, false, []string{}, map[string]int{}},
 
 		{``, false, []string{}, map[string]int{}},
+
+		// test cases found by fuzzing!
+		{`import }{$"`, true, []string{}, map[string]int{}},
+		{`import /*/*.txt`, true, []string{}, map[string]int{}},
+		{`import /???/?*?o`, true, []string{}, map[string]int{}},
+		{`import /??`, true, []string{}, map[string]int{}},
+		{`import /[a-z]`, true, []string{}, map[string]int{}},
+		{`import {$}`, true, []string{}, map[string]int{}},
+		{`import {%}`, true, []string{}, map[string]int{}},
+		{`import {$$}`, true, []string{}, map[string]int{}},
+		{`import {%%}`, true, []string{}, map[string]int{}},
 	} {
 		result, err := testParseOne(test.input)
 
@@ -246,6 +273,101 @@ func TestParseOneAndImport(t *testing.T) {
 				continue
 			}
 		}
+	}
+}
+
+func TestRecursiveImport(t *testing.T) {
+	testParseOne := func(input string) (ServerBlock, error) {
+		p := testParser(input)
+		p.Next() // parseOne doesn't call Next() to start, so we must
+		err := p.parseOne()
+		return p.block, err
+	}
+
+	isExpected := func(got ServerBlock) bool {
+		if len(got.Keys) != 1 || got.Keys[0] != "localhost" {
+			t.Errorf("got keys unexpected: expect localhost, got %v", got.Keys)
+			return false
+		}
+		if len(got.Tokens) != 2 {
+			t.Errorf("got wrong number of tokens: expect 2, got %d", len(got.Tokens))
+			return false
+		}
+		if len(got.Tokens["dir1"]) != 1 || len(got.Tokens["dir2"]) != 2 {
+			t.Errorf("got unexpect tokens: %v", got.Tokens)
+			return false
+		}
+		return true
+	}
+
+	recursiveFile1, err := filepath.Abs("testdata/recursive_import_test1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recursiveFile2, err := filepath.Abs("testdata/recursive_import_test2")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// test relative recursive import
+	err = ioutil.WriteFile(recursiveFile1, []byte(
+		`localhost
+		dir1
+		import recursive_import_test2`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(recursiveFile1)
+
+	err = ioutil.WriteFile(recursiveFile2, []byte("dir2 1"), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(recursiveFile2)
+
+	// import absolute path
+	result, err := testParseOne("import " + recursiveFile1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isExpected(result) {
+		t.Error("absolute+relative import failed")
+	}
+
+	// import relative path
+	result, err = testParseOne("import testdata/recursive_import_test1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isExpected(result) {
+		t.Error("relative+relative import failed")
+	}
+
+	// test absolute recursive import
+	err = ioutil.WriteFile(recursiveFile1, []byte(
+		`localhost
+		dir1
+		import `+recursiveFile2), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// import absolute path
+	result, err = testParseOne("import " + recursiveFile1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isExpected(result) {
+		t.Error("absolute+absolute import failed")
+	}
+
+	// import relative path
+	result, err = testParseOne("import testdata/recursive_import_test1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isExpected(result) {
+		t.Error("relative+absolute import failed")
 	}
 }
 
@@ -291,6 +413,9 @@ func TestParseAll(t *testing.T) {
 			{"glob1.host0"},
 			{"glob2.host0"},
 		}},
+
+		{`import notfound/*`, false, [][]string{}},        // glob needn't error with no matches
+		{`import notfound/file.conf`, true, [][]string{}}, // but a specific file should
 	} {
 		p := testParser(test.input)
 		blocks, err := p.parseAll()
@@ -399,4 +524,120 @@ func testParser(input string) parser {
 	buf := strings.NewReader(input)
 	p := parser{Dispenser: NewDispenser("Caddyfile", buf)}
 	return p
+}
+
+func TestSnippets(t *testing.T) {
+	p := testParser(`
+		(common) {
+			gzip foo
+			errors stderr
+		}
+		http://example.com {
+			import common
+		}
+	`)
+	blocks, err := p.parseAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range blocks {
+		t.Log(b.Keys)
+		t.Log(b.Tokens)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("Expect exactly one server block. Got %d.", len(blocks))
+	}
+	if actual, expected := blocks[0].Keys[0], "http://example.com"; expected != actual {
+		t.Errorf("Expected server name to be '%s' but was '%s'", expected, actual)
+	}
+	if len(blocks[0].Tokens) != 2 {
+		t.Fatalf("Server block should have tokens from import")
+	}
+	if actual, expected := blocks[0].Tokens["gzip"][0].Text, "gzip"; expected != actual {
+		t.Errorf("Expected argument to be '%s' but was '%s'", expected, actual)
+	}
+	if actual, expected := blocks[0].Tokens["errors"][1].Text, "stderr"; expected != actual {
+		t.Errorf("Expected argument to be '%s' but was '%s'", expected, actual)
+	}
+
+}
+
+func writeStringToTempFileOrDie(t *testing.T, str string) (pathToFile string) {
+	file, err := ioutil.TempFile("", t.Name())
+	if err != nil {
+		panic(err) // get a stack trace so we know where this was called from.
+	}
+	if _, err := file.WriteString(str); err != nil {
+		panic(err)
+	}
+	if err := file.Close(); err != nil {
+		panic(err)
+	}
+	return file.Name()
+}
+
+func TestImportedFilesIgnoreNonDirectiveImportTokens(t *testing.T) {
+	fileName := writeStringToTempFileOrDie(t, `
+		http://example.com {
+			# This isn't an import directive, it's just an arg with value 'import'
+			basicauth / import password
+		}
+	`)
+	// Parse the root file that imports the other one.
+	p := testParser(`import ` + fileName)
+	blocks, err := p.parseAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range blocks {
+		t.Log(b.Keys)
+		t.Log(b.Tokens)
+	}
+	auth := blocks[0].Tokens["basicauth"]
+	line := auth[0].Text + " " + auth[1].Text + " " + auth[2].Text + " " + auth[3].Text
+	if line != "basicauth / import password" {
+		// Previously, it would be changed to:
+		//   basicauth / import /path/to/test/dir/password
+		// referencing a file that (probably) doesn't exist and changing the
+		// password!
+		t.Errorf("Expected basicauth tokens to be 'basicauth / import password' but got %#q", line)
+	}
+}
+
+func TestSnippetAcrossMultipleFiles(t *testing.T) {
+	// Make the derived Caddyfile that expects (common) to be defined.
+	fileName := writeStringToTempFileOrDie(t, `
+		http://example.com {
+			import common
+		}
+	`)
+
+	// Parse the root file that defines (common) and then imports the other one.
+	p := testParser(`
+		(common) {
+			gzip foo
+		}
+		import ` + fileName + `
+	`)
+
+	blocks, err := p.parseAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range blocks {
+		t.Log(b.Keys)
+		t.Log(b.Tokens)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("Expect exactly one server block. Got %d.", len(blocks))
+	}
+	if actual, expected := blocks[0].Keys[0], "http://example.com"; expected != actual {
+		t.Errorf("Expected server name to be '%s' but was '%s'", expected, actual)
+	}
+	if len(blocks[0].Tokens) != 1 {
+		t.Fatalf("Server block should have tokens from import")
+	}
+	if actual, expected := blocks[0].Tokens["gzip"][0].Text, "gzip"; expected != actual {
+		t.Errorf("Expected argument to be '%s' but was '%s'", expected, actual)
+	}
 }
